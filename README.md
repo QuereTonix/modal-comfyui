@@ -26,16 +26,16 @@ Good for testing wan2.2 or other video generation models.
 
 ### Models
 
-Edit `models.py` to manage your models. You can specify:
+Copy `models.example.py` to `models.py` and edit it to manage your models. You can specify:
 - Hugging Face models(`models`) using `repo_id` and `filename`.
 - External models(`models_ext`, e.g. civitai) using a direct `url`.
 
 Models are downloaded to volumes and symlinked to the specified `model_dir`.
-See `models.py.example` for reference.
+See `models.example.py` for reference.
 
 ### Plugins and Custom Nodes
 
-- **Plugins**: Edit `plugins.py` to add custom node IDs or titles to be installed via `comfy-cli`.
+Copy `plugins.example.py` to `plugins.py` and edit it to add custom node IDs or titles to be installed via `comfy-cli`.
 - **Workflow Dependencies**: If you have a `workflow_api.json` in the root directory, the setup will automatically install the necessary custom nodes for that workflow.
 
 ### In case of Insufficient Custom Node
