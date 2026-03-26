@@ -1,6 +1,6 @@
 """
 FitSweetTreat Video Automation App
-Full pipeline: Prompt → Bella/George (Gemini) → KokoroTTS → LTX 2.3 → moviepy → Queue
+Full pipeline: Prompt -> Bella/George (Gemini) -> KokoroTTS -> LTX 2.3 -> moviepy -> Queue
 """
 
 import os
@@ -32,37 +32,37 @@ KOKORO_URL = "http://localhost:8000"
 BG_MUSIC_URL = "https://www.chosic.com/wp-content/uploads/2021/07/The-Wait-Extreme-Music.mp3"
 GEMINI_MODEL = "gemini-2.0-flash"
 
-GEORGE_SYSTEM_PROMPT = """You are George, a video production expert for FitSweetTreat — a healthy food short-form channel.
-Given a food recipe prompt, produce a structured 3-scene video script as JSON.
-
-Output ONLY valid JSON matching this exact schema. No markdown, no code fences, no extra text:
-{
-  "recipe_name": "Short dish name",
-  "script": "Full narration across all 3 scenes",
-  "video_scenes": [
-    {
-      "scene": 1,
-      "voiceText": "Hi, I'm George, this is FitSweetTreat and today we're making [DISH NAME]. [One hook sentence about key ingredient]. About 20 words total.",
-      "videoPrompt": "40-60 word cinematic opening shot. Describe camera movement, lighting style, textures, and ambient audio cues."
-    },
-    {
-      "scene": 2,
-      "voiceText": "One sentence describing the main cooking step or highlight. About 20 words.",
-      "videoPrompt": "40-60 word mid-scene cinematic shot. Describe action, camera angle, close-ups, sizzle sounds, steam, etc."
-    },
-    {
-      "scene": 3,
-      "voiceText": "Final line ending with the word but or so. About 20 words.",
-      "videoPrompt": "40-60 word final beauty shot. Warm golden lighting, full dish reveal, camera pull-back or slow pan."
-    }
-  ]
-}
-
-Hard rules:
-- scene 1 voiceText MUST start with exactly: Hi, I'm George, this is FitSweetTreat and today we're making
-- scene 3 voiceText MUST end with the word: but  OR  so
-- Each voiceText must be ~20 words (roughly 5-8 seconds spoken aloud)
-- Each videoPrompt must be 40-60 words with camera movement + lighting + audio detail"""
+GEORGE_SYSTEM_PROMPT = (
+    "You are George, a video production expert for FitSweetTreat, a healthy food short-form channel.\n"
+    "Given a food recipe prompt, produce a structured 3-scene video script as JSON.\n\n"
+    "Output ONLY valid JSON matching this exact schema. No markdown, no code fences, no extra text:\n"
+    "{\n"
+    "  \"recipe_name\": \"Short dish name\",\n"
+    "  \"script\": \"Full narration across all 3 scenes\",\n"
+    "  \"video_scenes\": [\n"
+    "    {\n"
+    "      \"scene\": 1,\n"
+    "      \"voiceText\": \"Hi, I'm George, this is FitSweetTreat and today we're making [DISH]. [Hook]. About 20 words.\",\n"
+    "      \"videoPrompt\": \"40-60 word cinematic opening. Camera movement, lighting, textures, ambient audio.\"\n"
+    "    },\n"
+    "    {\n"
+    "      \"scene\": 2,\n"
+    "      \"voiceText\": \"One sentence about the main cooking step. About 20 words.\",\n"
+    "      \"videoPrompt\": \"40-60 word mid-scene shot. Action, close-ups, sizzle sounds, steam, camera angle.\"\n"
+    "    },\n"
+    "    {\n"
+    "      \"scene\": 3,\n"
+    "      \"voiceText\": \"Final line ending with the word but or so. About 20 words.\",\n"
+    "      \"videoPrompt\": \"40-60 word beauty shot. Warm golden light, full dish reveal, camera pull-back.\"\n"
+    "    }\n"
+    "  ]\n"
+    "}\n\n"
+    "Hard rules:\n"
+    "- scene 1 voiceText MUST start with: Hi, I'm George, this is FitSweetTreat and today we're making\n"
+    "- scene 3 voiceText MUST end with the word: but  OR  so\n"
+    "- Each voiceText must be ~20 words (5-8 seconds spoken)\n"
+    "- Each videoPrompt must be 40-60 words with camera movement + lighting + audio detail"
+)
 
 
 class CredentialVault:
@@ -93,461 +93,485 @@ class CredentialVault:
 
 
 class Database:
-    """SQLite management for queue and history"""
-    
-    def __init__(self, db_path=DB_PATH):
-        self.db_path = db_path
-        self.init_db()
-    
-    def init_db(self):
-        """Create tables if they don't exist"""
-        conn = sqlite3.connect(self.db_path)
-        c = conn.cursor()
-        
-        c.execute('''CREATE TABLE IF NOT EXISTS video_queue (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            recipe_name TEXT NOT NULL,
-            video_prompts TEXT NOT NULL,
-            voice_texts TEXT NOT NULL,
-            status TEXT DEFAULT 'pending',
-            final_video_path TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            approved_at TIMESTAMP,
-            posted_at TIMESTAMP
-        )''')
-        
-        c.execute('''CREATE TABLE IF NOT EXISTS posting_schedule (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            platform TEXT NOT NULL,
-            post_time TIME NOT NULL,
-            video_id INTEGER,
-            FOREIGN KEY(video_id) REFERENCES video_queue(id)
-        )''')
-        
+    def __init__(self):
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS video_queue ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  recipe_name TEXT,"
+            "  george_json TEXT,"
+            "  final_video_path TEXT,"
+            "  status TEXT DEFAULT 'pending',"
+            "  created_at TEXT DEFAULT (datetime('now')),"
+            "  approved_at TEXT"
+            ")"
+        )
         conn.commit()
         conn.close()
-    
-    def add_video_to_queue(self, recipe_name, video_prompts, voice_texts):
-        """Add generated video to queue for review"""
-        conn = sqlite3.connect(self.db_path)
+
+    def add_to_queue(self, recipe_name, george_json, final_video_path):
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute('''INSERT INTO video_queue (recipe_name, video_prompts, voice_texts)
-                     VALUES (?, ?, ?)''',
-                  (recipe_name, json.dumps(video_prompts), json.dumps(voice_texts)))
-        video_id = c.lastrowid
+        c.execute(
+            "INSERT INTO video_queue (recipe_name, george_json, final_video_path) VALUES (?, ?, ?)",
+            (recipe_name, json.dumps(george_json), str(final_video_path)),
+        )
+        vid_id = c.lastrowid
         conn.commit()
         conn.close()
-        return video_id
-    
-    def approve_video(self, video_id, final_video_path):
-        """Mark video as approved and ready for posting"""
-        conn = sqlite3.connect(self.db_path)
-        c = conn.cursor()
-        c.execute('''UPDATE video_queue 
-                     SET status='approved', final_video_path=?, approved_at=CURRENT_TIMESTAMP
-                     WHERE id=?''', (final_video_path, video_id))
+        return vid_id
+
+    def approve(self, vid_id):
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute(
+            "UPDATE video_queue SET status='approved', approved_at=datetime('now') WHERE id=?",
+            (vid_id,),
+        )
         conn.commit()
         conn.close()
-    
-    def get_queue(self, status='pending'):
-        """Get videos with specific status"""
-        conn = sqlite3.connect(self.db_path)
-        c = conn.cursor()
-        c.execute('SELECT * FROM video_queue WHERE status=? ORDER BY created_at DESC',
-                  (status,))
-        videos = c.fetchall()
+
+    def delete(self, vid_id):
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("DELETE FROM video_queue WHERE id=?", (vid_id,))
+        conn.commit()
         conn.close()
-        return videos
+
+    def get_pending(self):
+        conn = sqlite3.connect(DB_PATH)
+        rows = conn.execute(
+            "SELECT id, recipe_name, final_video_path, created_at FROM video_queue "
+            "WHERE status='pending' ORDER BY created_at DESC"
+        ).fetchall()
+        conn.close()
+        return rows
 
 
-class ScheduleConfig:
-    """Manage posting schedule"""
-    
-    def __init__(self, config_path=CONFIG_PATH):
-        self.config_path = config_path
-        self.load_or_create()
-    
-    def load_or_create(self):
-        """Load existing config or create default"""
-        if self.config_path.exists():
-            self.config = json.loads(self.config_path.read_text())
-        else:
-            self.config = {
-                "timezone": "America/New_York",
-                "platforms": {
-                    "tiktok": {"posts_per_day": 3, "times": ["09:00", "14:00", "20:00"]},
-                    "instagram": {"posts_per_day": 2, "times": ["12:00", "18:00"]},
-                    "youtube": {"posts_per_day": 1, "times": ["15:00"]}
-                }
-            }
-            self.save()
-    
-    def save(self):
-        """Save schedule to file"""
-        self.config_path.write_text(json.dumps(self.config, indent=2))
-    
-    def get_schedule(self):
-        """Get current schedule"""
-        return self.config
-    
-    def update_platform_schedule(self, platform, times):
-        """Update posting times for a platform"""
-        self.config["platforms"][platform]["times"] = sorted(times)
-        self.config["platforms"][platform]["posts_per_day"] = len(times)
-        self.save()
-
-
-class GeminiAgent:
-    """Interface with Google Gemini for Bella + George"""
-    
+class GeminiGeorge:
     def __init__(self, api_key):
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel("gemini-2.0-flash")
-    
-    def chat_with_bella(self, user_message):
-        """Get Bella's response"""
-        response = self.model.generate_content(f"""
-You are Bella, a helpful assistant. Respond naturally to: {user_message}
-Keep it brief and friendly. No emojis or special formatting.
-""")
-        return response.text
-    
-    def generate_george_content(self, user_request):
-        """Generate George's structured video content"""
-        prompt = f"""
-Given this request: {user_request}
+        self.model = genai.GenerativeModel(GEMINI_MODEL, system_instruction=GEORGE_SYSTEM_PROMPT)
 
-You are George, a video production expert. Generate a JSON with:
-1. recipe_name: Name of the dish
-2. script: Full script with ingredients
-3. video_scenes: Array of 3 scenes, each with:
-   - scene: Scene number (1-3)
-   - voiceText: ~20 words of speech
-   - videoPrompt: 40-60 words, cinematic, with audio cues and camera movements
-
-Output ONLY valid JSON, no extra text.
-"""
-        response = self.model.generate_content(prompt)
-        try:
-            return json.loads(response.text)
-        except:
-            return None
+    def generate_scenes(self, user_prompt):
+        response = self.model.generate_content(user_prompt)
+        text = response.text.strip()
+        if text.startswith("```"):
+            parts = text.split("```")
+            text = parts[1] if len(parts) > 1 else text
+            if text.startswith("json"):
+                text = text[4:]
+        return json.loads(text.strip())
 
 
 class ComfyUIBridge:
-    """Interface with Modal-hosted ComfyUI LTX"""
-    
-    def __init__(self, comfyui_url="https://chlevin135--modal-comfyui-ui.modal.run"):
-        self.url = comfyui_url
-        self.workflow_template = self._load_workflow_template()
-    
-    def _load_workflow_template(self):
-        """Load the workflow_api.json template"""
-        workflow_path = ROOT_DIR / "workflow_api.json"
-        if workflow_path.exists():
-            return json.loads(workflow_path.read_text())
-        return {}
-    
-    def generate_video(self, video_prompt):
-        """Submit prompt to ComfyUI and get video"""
-        if not self.workflow_template:
-            raise Exception("No workflow template found")
-        
-        # Update prompt in workflow
-        workflow = self.workflow_template.copy()
-        for node_id, node_data in workflow.get("nodes", {}).items():
-            if isinstance(node_data, dict) and node_data.get("type") == "CLIPTextEncode":
-                if "widgets_values" in node_data:
-                    node_data["widgets_values"][0] = video_prompt
-        
-        # Submit to ComfyUI
-        response = requests.post(
-            f"{self.url}/prompt",
-            json={"prompt": workflow},
-            timeout=600
-        )
-        result = response.json()
-        prompt_id = result.get("prompt_id")
-        
-        if not prompt_id:
-            raise Exception("Failed to submit workflow to ComfyUI")
-        
-        # Poll for completion
-        return self._wait_for_video(prompt_id)
-    
-    def _wait_for_video(self, prompt_id, max_wait=1800):
-        """Poll ComfyUI history for completion"""
-        import time
+    def __init__(self):
+        self.url = COMFYUI_URL
+        wf_path = ROOT_DIR / "workflow_api.json"
+        if not wf_path.exists():
+            raise FileNotFoundError("workflow_api.json not found next to this script.")
+        self.workflow = json.loads(wf_path.read_text())
+
+    def submit(self, video_prompt):
+        wf = json.loads(json.dumps(self.workflow))
+        if "2483" in wf:
+            wf["2483"]["inputs"]["text"] = video_prompt
+        else:
+            for node_id, node in wf.items():
+                if isinstance(node, dict) and node.get("class_type") == "CLIPTextEncode":
+                    wf[node_id]["inputs"]["text"] = video_prompt
+                    break
+        resp = requests.post(f"{self.url}/prompt", json={"prompt": wf}, timeout=60)
+        resp.raise_for_status()
+        pid = resp.json().get("prompt_id")
+        if not pid:
+            raise RuntimeError("ComfyUI did not return a prompt_id")
+        return pid
+
+    def wait_and_download(self, prompt_id, output_path, timeout=1800, progress_cb=None):
         start = time.time()
-        
-        while time.time() - start < max_wait:
-            response = requests.get(f"{self.url}/history/{prompt_id}")
-            history = response.json()
-            
+        while time.time() - start < timeout:
+            elapsed = int(time.time() - start)
+            if progress_cb:
+                progress_cb(f"LTX generating... {elapsed}s")
+            try:
+                resp = requests.get(f"{self.url}/history/{prompt_id}", timeout=30)
+                history = resp.json()
+            except Exception:
+                time.sleep(5)
+                continue
             if prompt_id in history:
-                output = history[prompt_id]
-                if "outputs" in output:
-                    # Extract video file path
-                    for node_id, node_output in output["outputs"].items():
-                        for key, value in node_output.items():
-                            if isinstance(value, list):
-                                for item in value:
-                                    if isinstance(item, str) and item.endswith(".mp4"):
-                                        return f"{self.url}/view?filename={item}"
-            
+                outputs = history[prompt_id].get("outputs", {})
+                for node_out in outputs.values():
+                    for item in node_out.get("videos", []):
+                        fname = item.get("filename", "")
+                        subfolder = item.get("subfolder", "")
+                        if fname.endswith(".mp4"):
+                            view_url = f"{self.url}/view?filename={fname}&type=output"
+                            if subfolder:
+                                view_url += f"&subfolder={subfolder}"
+                            if progress_cb:
+                                progress_cb(f"Downloading {fname}...")
+                            r = requests.get(view_url, timeout=600, stream=True)
+                            r.raise_for_status()
+                            with open(output_path, "wb") as f:
+                                for chunk in r.iter_content(8192):
+                                    f.write(chunk)
+                            return str(output_path)
             time.sleep(5)
-        
-        raise Exception("ComfyUI generation timed out")
+        raise TimeoutError(f"LTX timed out after {timeout}s")
 
 
-class AudioProcessing:
-    """Handle TTS and audio merging with moviepy"""
-    
-    def __init__(self, tts_endpoint="http://localhost:8000"):
-        # Default to local kokoro-tts service
-        self.tts_endpoint = tts_endpoint.rstrip('/')
-    
-    def generate_voice(self, text, voice_id="bm_george"):
-        """Generate TTS audio using local kokoro-tts service"""
+class KokoroTTS:
+    def speak(self, text, output_path, voice="bm_george"):
+        resp = requests.post(
+            f"{KOKORO_URL}/api/tts",
+            json={"text": text, "voice": voice},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        Path(output_path).write_bytes(resp.content)
+        return str(output_path)
+
+
+class VideoStitcher:
+    def stitch(self, scenes, bg_music_path, output_path, progress_cb=None):
+        from moviepy.editor import (
+            VideoFileClip, AudioFileClip,
+            concatenate_videoclips, CompositeAudioClip,
+        )
         try:
-            # kokoro-tts format: POST /api/tts with JSON body
-            response = requests.post(
-                f"{self.tts_endpoint}/api/tts",
-                json={"text": text, "voice": voice_id},
-                timeout=30
-            )
-            if response.status_code == 200:
-                # Save as temporary audio file
-                audio_data = response.content
-                temp_audio = Path("/tmp") / f"voice_{hash(text)}.wav"
-                temp_audio.write_bytes(audio_data)
-                return str(temp_audio)
+            from moviepy.audio.fx.all import audio_loop as moviepy_audio_loop
+        except ImportError:
+            moviepy_audio_loop = None
+
+        scene_clips = []
+        for i, scene in enumerate(scenes):
+            if progress_cb:
+                progress_cb(f"Merging scene {i + 1}/3...")
+            video = VideoFileClip(scene["video"])
+            audio = AudioFileClip(scene["audio"])
+            if audio.duration > video.duration:
+                audio = audio.subclip(0, video.duration)
+            scene_clips.append(video.set_audio(audio))
+
+        if progress_cb:
+            progress_cb("Concatenating 3 scenes...")
+        final = concatenate_videoclips(scene_clips, method="compose")
+
+        if bg_music_path and Path(bg_music_path).exists():
+            if progress_cb:
+                progress_cb("Mixing background music...")
+            bg = AudioFileClip(str(bg_music_path)).volumex(0.15)
+            if moviepy_audio_loop and bg.duration < final.duration:
+                bg = moviepy_audio_loop(bg, duration=final.duration)
             else:
-                raise Exception(f"TTS error: {response.status_code}")
-        except Exception as e:
-            raise Exception(f"Voice generation failed: {str(e)}")
-    
-    def merge_video_audio(self, video_path, audio_path, output_path):
-        """Use moviepy to merge video and audio (no FFmpeg required)"""
-        try:
-            from moviepy.editor import VideoFileClip, AudioFileClip
-            
-            # Load video and audio
-            video = VideoFileClip(str(video_path))
-            audio = AudioFileClip(str(audio_path))
-            
-            # Set audio to video
-            final = video.set_audio(audio)
-            
-            # Write result
-            final.write_videofile(str(output_path), verbose=False, logger=None)
-            
-            # Clean up
-            final.close()
-            video.close()
-            audio.close()
-            
-        except Exception as e:
-            raise Exception(f"Video/audio merge failed: {str(e)}")
+                bg = bg.subclip(0, min(bg.duration, final.duration))
+            if final.audio:
+                final = final.set_audio(CompositeAudioClip([final.audio, bg]))
+            else:
+                final = final.set_audio(bg)
+
+        if progress_cb:
+            progress_cb("Writing final MP4...")
+        final.write_videofile(
+            str(output_path), verbose=False, logger=None,
+            codec="libx264", audio_codec="aac",
+        )
+        for clip in scene_clips:
+            clip.close()
+        final.close()
+        return str(output_path)
+
+
+def ensure_dirs():
+    for d in (TEMP_DIR, OUTPUT_DIR, ASSETS_DIR):
+        d.mkdir(parents=True, exist_ok=True)
+
+
+def download_bg_music(log_cb=None):
+    bg_path = ASSETS_DIR / "bg_music.mp3"
+    if bg_path.exists():
+        return str(bg_path)
+    if log_cb:
+        log_cb("Downloading background music (one-time)...")
+    try:
+        r = requests.get(BG_MUSIC_URL, timeout=60, stream=True)
+        r.raise_for_status()
+        with open(bg_path, "wb") as f:
+            for chunk in r.iter_content(8192):
+                f.write(chunk)
+        return str(bg_path)
+    except Exception as e:
+        if log_cb:
+            log_cb(f"BG music download failed: {e}")
+        return None
 
 
 class MainApp:
-    """Main GUI application"""
-    
     def __init__(self, root):
         self.root = root
         self.root.title("FitSweetTreat Video Automation")
-        self.root.geometry("1000x700")
-        
+        self.root.geometry("1100x800")
+        ensure_dirs()
         self.vault = CredentialVault()
         self.db = Database()
-        self.schedule = ScheduleConfig()
         self.credentials = self.vault.load_credentials()
-        
+        self._pipeline_running = False
         self._build_ui()
-    
+
     def _build_ui(self):
-        """Build main UI"""
-        # Notebook (tabs)
-        notebook = ttk.Notebook(self.root)
-        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        # Create tabs
-        self.settings_frame = ttk.Frame(notebook)
-        self.queue_frame = ttk.Frame(notebook)
-        self.logs_frame = ttk.Frame(notebook)
-        
-        notebook.add(self.settings_frame, text="Settings & Chat")
-        notebook.add(self.queue_frame, text="Queue")
-        notebook.add(self.logs_frame, text="Logs")
-        
-        self._build_settings_tab()
+        nb = ttk.Notebook(self.root)
+        nb.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.tab_gen = ttk.Frame(nb)
+        self.tab_queue = ttk.Frame(nb)
+        self.tab_settings = ttk.Frame(nb)
+        self.tab_logs = ttk.Frame(nb)
+        nb.add(self.tab_gen, text="Generate")
+        nb.add(self.tab_queue, text="Queue")
+        nb.add(self.tab_settings, text="Settings")
+        nb.add(self.tab_logs, text="Logs")
+        self._build_generate_tab()
         self._build_queue_tab()
+        self._build_settings_tab()
         self._build_logs_tab()
-    
-    def _build_settings_tab(self):
-        """Settings and chat interface"""
-        frame = ttk.Frame(self.settings_frame, padding=10)
-        frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Status
-        ttk.Label(frame, text="API Configuration", font=("Arial", 12, "bold")).pack(anchor="w", pady=10)
-        
-        ttk.Label(frame, text="Gemini API Key:").pack(anchor="w")
-        self.gemini_entry = ttk.Entry(frame, width=50, show="*")
-        self.gemini_entry.pack(anchor="w", pady=5)
-        self.gemini_entry.insert(0, self.credentials.get("gemini_api_key", ""))
-        
-        ttk.Label(frame, text="TikTok API Key:").pack(anchor="w")
-        self.tiktok_entry = ttk.Entry(frame, width=50, show="*")
-        self.tiktok_entry.pack(anchor="w", pady=5)
-        self.tiktok_entry.insert(0, self.credentials.get("tiktok_api_key", ""))
-        
-        ttk.Label(frame, text="Instagram API Token:").pack(anchor="w")
-        self.instagram_entry = ttk.Entry(frame, width=50, show="*")
-        self.instagram_entry.pack(anchor="w", pady=5)
-        self.instagram_entry.insert(0, self.credentials.get("instagram_api_token", ""))
-        
-        ttk.Label(frame, text="YouTube API Key:").pack(anchor="w")
-        self.youtube_entry = ttk.Entry(frame, width=50, show="*")
-        self.youtube_entry.pack(anchor="w", pady=5)
-        self.youtube_entry.insert(0, self.credentials.get("youtube_api_key", ""))
-        
-        # Save credentials button
-        ttk.Button(frame, text="Save Credentials (Encrypted)", command=self._save_credentials).pack(pady=10)
-        
-        # Schedule section
-        ttk.Label(frame, text="Posting Schedule", font=("Arial", 12, "bold")).pack(anchor="w", pady=(20, 10))
-        
-        schedule_text = "TikTok: 3x daily at 9:00 AM, 2:00 PM, 8:00 PM\n"
-        schedule_text += "Instagram: 2x daily at 12:00 PM, 6:00 PM\n"
-        schedule_text += "YouTube: 1x daily at 3:00 PM"
-        ttk.Label(frame, text=schedule_text, justify="left").pack(anchor="w")
-        
-        # Chat section
-        ttk.Label(frame, text="Chat with Bella", font=("Arial", 12, "bold")).pack(anchor="w", pady=(20, 10))
-        
-        ttk.Label(frame, text="Enter your request:").pack(anchor="w")
-        self.chat_input = tk.Text(frame, height=3, width=50)
-        self.chat_input.pack(anchor="w", pady=5)
-        
-        ttk.Button(frame, text="Send to Bella →", command=self._send_to_bella).pack(pady=10)
-        
-        ttk.Label(frame, text="Response:").pack(anchor="w")
-        self.bella_response = scrolledtext.ScrolledText(frame, height=8, width=60)
-        self.bella_response.pack(anchor="w", pady=5)
-    
+
+    def _build_generate_tab(self):
+        f = ttk.Frame(self.tab_gen, padding=12)
+        f.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(f, text="Recipe Prompt", font=("Arial", 12, "bold")).pack(anchor="w")
+        ttk.Label(f, text="Describe the dish, ingredients, macros, and style.", foreground="#555").pack(anchor="w")
+        self.prompt_input = tk.Text(f, height=7, width=95, wrap=tk.WORD)
+        self.prompt_input.pack(fill=tk.X, pady=(5, 8))
+        btn_row = ttk.Frame(f)
+        btn_row.pack(fill=tk.X)
+        self.gen_btn = ttk.Button(btn_row, text="Generate Video  >>>", command=self._start_pipeline)
+        self.gen_btn.pack(side=tk.LEFT, padx=5)
+        self.status_lbl = ttk.Label(btn_row, text="Ready", foreground="#007700")
+        self.status_lbl.pack(side=tk.LEFT, padx=15)
+        self.progress = ttk.Progressbar(f, mode="indeterminate", length=600)
+        self.progress.pack(fill=tk.X, pady=6)
+        ttk.Label(f, text="George's 3-Scene Plan (live):", font=("Arial", 11, "bold")).pack(anchor="w", pady=(8, 2))
+        self.plan_text = scrolledtext.ScrolledText(f, height=20, width=95, state=tk.DISABLED, wrap=tk.WORD)
+        self.plan_text.pack(fill=tk.BOTH, expand=True)
+
     def _build_queue_tab(self):
-        """Queue viewer"""
-        frame = ttk.Frame(self.queue_frame, padding=10)
-        frame.pack(fill=tk.BOTH, expand=True)
-        
-        ttk.Label(frame, text="Video Queue (Pending Review)", font=("Arial", 12, "bold")).pack(anchor="w", pady=10)
-        
-        # Queue list
-        self.queue_listbox = tk.Listbox(frame, height=15, width=80)
-        self.queue_listbox.pack(fill=tk.BOTH, expand=True, pady=10)
-        
-        # Action buttons
-        button_frame = ttk.Frame(frame)
-        button_frame.pack(fill=tk.X, pady=10)
-        
-        ttk.Button(button_frame, text="Refresh Queue", command=self._refresh_queue).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="Approve & Schedule Posting", command=self._approve_video).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="Delete", command=self._delete_video).pack(side=tk.LEFT, padx=5)
-        
+        f = ttk.Frame(self.tab_queue, padding=12)
+        f.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(f, text="Pending Review", font=("Arial", 12, "bold")).pack(anchor="w", pady=(0, 8))
+        cols = ("ID", "Recipe", "Video Path", "Created")
+        self.queue_tree = ttk.Treeview(f, columns=cols, show="headings", height=15)
+        self.queue_tree.heading("ID", text="ID")
+        self.queue_tree.heading("Recipe", text="Recipe")
+        self.queue_tree.heading("Video Path", text="Video Path")
+        self.queue_tree.heading("Created", text="Created")
+        self.queue_tree.column("ID", width=40)
+        self.queue_tree.column("Recipe", width=200)
+        self.queue_tree.column("Video Path", width=420)
+        self.queue_tree.column("Created", width=160)
+        self.queue_tree.pack(fill=tk.BOTH, expand=True)
+        bf = ttk.Frame(f)
+        bf.pack(fill=tk.X, pady=8)
+        ttk.Button(bf, text="Refresh", command=self._refresh_queue).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bf, text="Approve + Schedule", command=self._approve_selected).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bf, text="Delete", command=self._delete_selected).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bf, text="Open File", command=self._open_video).pack(side=tk.LEFT, padx=4)
         self._refresh_queue()
-    
+
+    def _build_settings_tab(self):
+        f = ttk.Frame(self.tab_settings, padding=12)
+        f.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(f, text="API Credentials", font=("Arial", 12, "bold")).pack(anchor="w", pady=(0, 10))
+        self._cred_entries = {}
+        for label, key in [
+            ("Gemini API Key", "gemini_api_key"),
+            ("TikTok API Key", "tiktok_api_key"),
+            ("Instagram Token", "instagram_api_token"),
+            ("YouTube API Key", "youtube_api_key"),
+        ]:
+            ttk.Label(f, text=label + ":").pack(anchor="w")
+            e = ttk.Entry(f, width=65, show="*")
+            e.pack(anchor="w", pady=(2, 8))
+            e.insert(0, self.credentials.get(key, ""))
+            self._cred_entries[key] = e
+        ttk.Button(f, text="Save Credentials", command=self._save_credentials).pack(pady=8, anchor="w")
+        ttk.Separator(f).pack(fill=tk.X, pady=10)
+        ttk.Label(f, text=f"ComfyUI endpoint: {COMFYUI_URL}").pack(anchor="w")
+        ttk.Label(f, text=f"KokoroTTS endpoint: {KOKORO_URL}").pack(anchor="w")
+        ttk.Label(f, text=f"Gemini model: {GEMINI_MODEL}").pack(anchor="w")
+        ttk.Label(f, text="Voice: bm_george").pack(anchor="w")
+
     def _build_logs_tab(self):
-        """Activity logs"""
-        frame = ttk.Frame(self.logs_frame, padding=10)
-        frame.pack(fill=tk.BOTH, expand=True)
-        
-        ttk.Label(frame, text="System Logs", font=("Arial", 12, "bold")).pack(anchor="w", pady=10)
-        
-        self.logs_text = scrolledtext.ScrolledText(frame, height=25, width=100)
-        self.logs_text.pack(fill=tk.BOTH, expand=True, pady=10)
-        
-        self._log("System initialized. Ready for video generation.")
-    
-    def _save_credentials(self):
-        """Save API credentials encrypted"""
-        creds = {
-            "gemini_api_key": self.gemini_entry.get(),
-            "tiktok_api_key": self.tiktok_entry.get(),
-            "instagram_api_token": self.instagram_entry.get(),
-            "youtube_api_key": self.youtube_entry.get()
-        }
-        self.vault.save_credentials(creds)
-        messagebox.showinfo("Success", "Credentials saved securely!")
-        self._log("Credentials updated and encrypted.")
-    
-    def _send_to_bella(self):
-        """Send message to Bella (Gemini)"""
-        user_input = self.chat_input.get("1.0", tk.END).strip()
-        if not user_input:
-            messagebox.showwarning("Input", "Please enter a message.")
-            return
-        
-        # Check if credentials are set
-        if not self.gemini_entry.get():
-            messagebox.showerror("Error", "Please set Gemini API key first.")
-            return
-        
-        # Process in background
-        self._log("Processing with Bella...")
-        threading.Thread(target=self._process_bella_request, args=(user_input,), daemon=True).start()
-    
-    def _process_bella_request(self, user_input):
-        """Background thread for Bella processing"""
-        try:
-            agent = GeminiAgent(self.gemini_entry.get())
-            response = agent.chat_with_bella(user_input)
-            self.bella_response.config(state=tk.NORMAL)
-            self.bella_response.delete("1.0", tk.END)
-            self.bella_response.insert("1.0", response)
-            self.bella_response.config(state=tk.DISABLED)
-            self._log(f"Bella responded: {response[:100]}...")
-        except Exception as e:
-            self._log(f"Error: {str(e)}")
-            messagebox.showerror("Error", str(e))
-    
-    def _refresh_queue(self):
-        """Refresh queue display"""
-        self.queue_listbox.delete(0, tk.END)
-        videos = self.db.get_queue("pending")
-        for video in videos:
-            self.queue_listbox.insert(tk.END, f"[{video[0]}] {video[1]} - {video[7]}")
-    
-    def _approve_video(self):
-        """Mark video for posting"""
-        selection = self.queue_listbox.curselection()
-        if not selection:
-            messagebox.showwarning("Selection", "Please select a video.")
-            return
-        
-        messagebox.showinfo("Approved", "Video scheduled for posting!")
-        self._log("Video approved and scheduled for distribution.")
-    
-    def _delete_video(self):
-        """Delete video from queue"""
-        selection = self.queue_listbox.curselection()
-        if selection:
-            self.queue_listbox.delete(selection)
-            self._log("Video deleted from queue.")
-    
-    def _log(self, message):
-        """Add message to logs"""
-        self.logs_text.config(state=tk.NORMAL)
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.logs_text.insert(tk.END, f"[{timestamp}] {message}\n")
-        self.logs_text.see(tk.END)
+        f = ttk.Frame(self.tab_logs, padding=12)
+        f.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(f, text="System Logs", font=("Arial", 12, "bold")).pack(anchor="w")
+        self.logs_text = scrolledtext.ScrolledText(f, height=35, wrap=tk.WORD)
+        self.logs_text.pack(fill=tk.BOTH, expand=True, pady=5)
         self.logs_text.config(state=tk.DISABLED)
+        self._log("App started. Ready.")
+
+    def _save_credentials(self):
+        creds = {k: e.get() for k, e in self._cred_entries.items()}
+        self.vault.save_credentials(creds)
+        self.credentials = creds
+        messagebox.showinfo("Saved", "Credentials saved securely.")
+        self._log("Credentials updated.")
+
+    def _start_pipeline(self):
+        if self._pipeline_running:
+            messagebox.showwarning("Busy", "Pipeline already running.")
+            return
+        prompt = self.prompt_input.get("1.0", tk.END).strip()
+        if not prompt:
+            messagebox.showwarning("Input", "Enter a recipe prompt first.")
+            return
+        api_key = self.credentials.get("gemini_api_key") or self._cred_entries["gemini_api_key"].get()
+        if not api_key:
+            messagebox.showerror("Error", "Set your Gemini API key in Settings first.")
+            return
+        self._pipeline_running = True
+        self.gen_btn.config(state=tk.DISABLED)
+        self.progress.start(12)
+        threading.Thread(target=self._run_pipeline, args=(prompt, api_key), daemon=True).start()
+
+    def _run_pipeline(self, prompt, api_key):
+        try:
+            self._status("Step 1/6  Calling Gemini (George)...")
+            george = GeminiGeorge(api_key)
+            plan = george.generate_scenes(prompt)
+            self._show_plan(plan)
+            recipe = plan.get("recipe_name", "Unknown Recipe")
+            self._log(f"George returned plan: {recipe}")
+
+            scenes = plan.get("video_scenes", [])
+            if len(scenes) != 3:
+                raise ValueError(f"Expected 3 scenes, got {len(scenes)}")
+
+            run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+            comfy = ComfyUIBridge()
+            tts = KokoroTTS()
+            stitcher = VideoStitcher()
+            bg_music = download_bg_music(self._log)
+
+            self._status("Step 2/6  Submitting 3 video jobs to LTX 2.3...")
+            prompt_ids = []
+            for sc in scenes:
+                self._log(f"  Submitting scene {sc['scene']}...")
+                pid = comfy.submit(sc["videoPrompt"])
+                prompt_ids.append(pid)
+                self._log(f"  Scene {sc['scene']} -> {pid}")
+
+            self._status("Step 3/6  Generating voice audio (KokoroTTS)...")
+            audio_paths = []
+            for i, sc in enumerate(scenes):
+                self._log(f"  TTS scene {sc['scene']}: {sc['voiceText'][:55]}...")
+                ap = TEMP_DIR / f"audio_{run_id}_s{i+1}.wav"
+                tts.speak(sc["voiceText"], ap)
+                audio_paths.append(str(ap))
+                self._log(f"  Audio {i+1} saved.")
+
+            self._status("Step 4/6  Waiting for LTX videos (5-15 min each)...")
+            video_paths = []
+            for i, pid in enumerate(prompt_ids):
+                self._log(f"  Polling scene {i+1} (pid: {pid})...")
+                vp = TEMP_DIR / f"video_{run_id}_s{i+1}.mp4"
+                comfy.wait_and_download(
+                    pid, vp,
+                    progress_cb=lambda msg, n=i: self._status(f"Step 4/6  Scene {n+1}: {msg}"),
+                )
+                video_paths.append(str(vp))
+                self._log(f"  Scene {i+1} video downloaded.")
+
+            self._status("Step 5/6  Stitching scenes + adding BG music...")
+            scene_data = [{"video": video_paths[i], "audio": audio_paths[i]} for i in range(3)]
+            final_path = OUTPUT_DIR / f"final_{run_id}.mp4"
+            stitcher.stitch(scene_data, bg_music, final_path, progress_cb=self._status)
+            self._log(f"Final video: {final_path}")
+
+            self._status("Step 6/6  Adding to review queue...")
+            vid_id = self.db.add_to_queue(recipe, plan, str(final_path))
+            self._log(f"Added to queue as #{vid_id}.")
+
+            self._status(f"Done! '{recipe}' ready for review.")
+            self.root.after(0, lambda: messagebox.showinfo(
+                "Video Ready",
+                f"Done! '{recipe}' is in the Queue tab.\n\nFile: {final_path}"
+            ))
+            self.root.after(0, self._refresh_queue)
+
+        except Exception as exc:
+            import traceback
+            self._log(f"PIPELINE ERROR: {exc}")
+            self._log(traceback.format_exc())
+            self._status(f"Error: {exc}")
+            self.root.after(0, lambda: messagebox.showerror("Pipeline Error", str(exc)))
+        finally:
+            self._pipeline_running = False
+            self.root.after(0, lambda: self.gen_btn.config(state=tk.NORMAL))
+            self.root.after(0, self.progress.stop)
+
+    def _show_plan(self, plan):
+        def _update():
+            self.plan_text.config(state=tk.NORMAL)
+            self.plan_text.delete("1.0", tk.END)
+            self.plan_text.insert("1.0", json.dumps(plan, indent=2))
+            self.plan_text.config(state=tk.DISABLED)
+        self.root.after(0, _update)
+
+    def _refresh_queue(self):
+        for row in self.queue_tree.get_children():
+            self.queue_tree.delete(row)
+        for row in self.db.get_pending():
+            self.queue_tree.insert("", tk.END, values=row)
+
+    def _approve_selected(self):
+        sel = self.queue_tree.selection()
+        if not sel:
+            messagebox.showwarning("Select", "Select a video first.")
+            return
+        vid_id = self.queue_tree.item(sel[0])["values"][0]
+        self.db.approve(vid_id)
+        self._refresh_queue()
+        self._log(f"Video #{vid_id} approved.")
+        messagebox.showinfo("Approved", f"Video #{vid_id} approved.")
+
+    def _delete_selected(self):
+        sel = self.queue_tree.selection()
+        if not sel:
+            return
+        vid_id = self.queue_tree.item(sel[0])["values"][0]
+        self.db.delete(vid_id)
+        self._refresh_queue()
+        self._log(f"Video #{vid_id} deleted.")
+
+    def _open_video(self):
+        sel = self.queue_tree.selection()
+        if not sel:
+            return
+        path = self.queue_tree.item(sel[0])["values"][2]
+        if path and Path(str(path)).exists():
+            os.startfile(path)
+        else:
+            messagebox.showwarning("Not Found", f"File not found:\n{path}")
+
+    def _status(self, msg):
+        self.root.after(0, lambda: self.status_lbl.config(text=msg))
+        self._log(msg)
+
+    def _log(self, message):
+        def _write():
+            if not hasattr(self, "logs_text"):
+                return
+            self.logs_text.config(state=tk.NORMAL)
+            ts = datetime.now().strftime("%H:%M:%S")
+            self.logs_text.insert(tk.END, f"[{ts}] {message}\n")
+            self.logs_text.see(tk.END)
+            self.logs_text.config(state=tk.DISABLED)
+        self.root.after(0, _write)
 
 
 def main():
     root = tk.Tk()
-    app = MainApp(root)
+    MainApp(root)
     root.mainloop()
 
 
