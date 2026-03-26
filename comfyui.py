@@ -29,12 +29,31 @@ def hf_download(
 
     Path(model_dir).mkdir(parents=True, exist_ok=True)
     local_filename = Path(filename).name
+    target_path = Path(model_dir) / local_filename
+    
+    # Remove existing file/link if it exists to ensure fresh link
+    if target_path.exists() or target_path.is_symlink():
+        target_path.unlink()
+    
     _ = subprocess.run(
         f"ln -s {model} {model_dir}/{local_filename}",
         shell=True,
         check=True,
     )
     print(f"Downloaded {repo_id}/{filename} to {model_dir}/{local_filename}")
+    
+    # Special case: Gemma model needs an alias for workflow compatibility
+    if "gemma" in filename.lower():
+        alias_name = "comfy_gemma_3_12B_it.safetensors"
+        alias_path = Path(model_dir) / alias_name
+        if alias_path.exists() or alias_path.is_symlink():
+            alias_path.unlink()
+        _ = subprocess.run(
+            f"ln -s {model} {model_dir}/{alias_name}",
+            shell=True,
+            check=True,
+        )
+        print(f"Created alias: {model_dir}/{alias_name} -> {local_filename}")
 
 
 def download_external_model(url: str, filename: str, model_dir: str):
@@ -100,17 +119,23 @@ image = (
 
 # download models
 image = image.env({"HF_HUB_ENABLE_HF_TRANSFER": "1"}).run_function(
-    download_all, volumes={"/cache": vol}
+    download_all, volumes={"/cache": vol}, secrets=[modal.Secret.from_name("huggingface")]
 )
 
 
-# setup custom nodes
+# setup custom nodes - always install plugins regardless of workflow
+image = image.run_commands("comfy node install " + " ".join(comfy_plugins))
+
+# setup workflow if it exists - bake into image at build time
 workflow_file_path = Path(__file__).parent / "workflow_api.json"
 if workflow_file_path.exists():
     image = (
-        image.add_local_file(workflow_file_path, "/root/workflow_api.json", copy=True)
-        .run_commands("comfy node install-deps --workflow=/root/workflow_api.json")
-        .run_commands("comfy node install " + " ".join(comfy_plugins))
+        image
+        .add_local_file(workflow_file_path, "/root/workflow_api.json", copy=True)
+        .run_commands(
+            "mkdir -p /root/comfy/ComfyUI/user/default && "
+            "cp /root/workflow_api.json /root/comfy/ComfyUI/user/default/workflow.json"
+        )
     )
 else:
     print(
@@ -118,6 +143,16 @@ else:
     )
 
 app = modal.App(name="modal-comfyui", image=image)
+
+
+@app.function(
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def download():
+    """Download and cache all configured models."""
+    download_all()
+    print("All models downloaded successfully!")
 
 
 @app.function(
@@ -132,5 +167,5 @@ app = modal.App(name="modal-comfyui", image=image)
 @modal.web_server(8000, startup_timeout=60)
 def ui():
     _ = subprocess.Popen(
-        "comfy launch --background -- --listen 0.0.0.0 --port 8000", shell=True
+        "comfy launch --background -- --listen 0.0.0.0 --port 8000 --enable-manager", shell=True
     )
