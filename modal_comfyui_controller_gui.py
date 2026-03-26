@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
 import queue
 import subprocess
 import threading
 import tkinter as tk
 import urllib.parse
+import urllib.request
 import webbrowser
 from pathlib import Path
 from tkinter import messagebox, scrolledtext
@@ -55,10 +57,11 @@ class ControllerApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("Modal ComfyUI Controller")
-        self.root.geometry("760x520")
+        self.root.geometry("900x600")
 
         self.output_queue: queue.Queue[str] = queue.Queue()
         self.busy = False
+        self.last_prompt_id: str | None = None
 
         self._build_ui()
         self._poll_output()
@@ -88,9 +91,22 @@ class ControllerApp:
             ("Stop", self.stop_app),
             ("Status", self.status_app),
             ("Open ComfyUI", self.open_app),
+            ("Run Workflow", self.run_workflow),
+            ("Check Output", self.check_output),
             ("Open Modal", self.open_modal),
         ]:
             tk.Button(buttons, text=text, width=14, command=cmd).pack(side=tk.LEFT, padx=(0, 8))
+
+        # Prompt input section
+        prompt_frame = tk.Frame(self.root, padx=12, pady=4)
+        prompt_frame.pack(fill=tk.X)
+        
+        tk.Label(prompt_frame, text="Video Prompt (leave blank for default):", anchor="w").pack(fill=tk.X)
+        self.prompt_input = tk.Text(prompt_frame, height=3, wrap=tk.WORD, font=("Consolas", 9))
+        self.prompt_input.pack(fill=tk.X)
+        
+        default_prompt = "A traditional Japanese tea ceremony takes place in a tatami room as a host carefully prepares matcha."
+        self.prompt_input.insert(tk.END, default_prompt)
 
         log_frame = tk.Frame(self.root, padx=12, pady=4)
         log_frame.pack(fill=tk.BOTH, expand=True)
@@ -194,6 +210,84 @@ class ControllerApp:
         url = f"{COMFYUI_URL}/?workflow={encoded}"
         webbrowser.open(url)
         self._append_log(f"\nOpened {url}\n")
+
+    def run_workflow(self) -> None:
+        def do_run() -> str:
+            workflow_path = ROOT_DIR / "workflow_api.json"
+            if not workflow_path.exists():
+                return f"Error: {workflow_path} not found."
+            
+            try:
+                # Get custom prompt from input
+                custom_prompt = self.prompt_input.get("1.0", tk.END).strip()
+                
+                with open(workflow_path, "r") as f:
+                    workflow = json.load(f)
+                
+                # Update all CLIPTextEncode nodes with custom prompt
+                if custom_prompt:
+                    for node_id, node_data in workflow.get("nodes", {}).items() if isinstance(workflow.get("nodes"), dict) else enumerate(workflow.get("nodes", [])):
+                        if isinstance(node_data, dict) and node_data.get("type") == "CLIPTextEncode":
+                            if "widgets_values" in node_data and isinstance(node_data["widgets_values"], list):
+                                node_data["widgets_values"][0] = custom_prompt
+                
+                url = f"{COMFYUI_URL}/prompt"
+                data = json.dumps({"prompt": workflow}).encode("utf-8")
+                
+                req = urllib.request.Request(
+                    url,
+                    data=data,
+                    headers={"Content-Type": "application/json"},
+                    method="POST"
+                )
+                
+                with urllib.request.urlopen(req, timeout=30) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+                    prompt_id = result.get("prompt_id")
+                    self.last_prompt_id = prompt_id
+                    return f"Workflow submitted!\nPrompt: {custom_prompt[:60]}...\nPrompt ID: {prompt_id}\nCheck status with 'Check Output' button."
+            except Exception as e:
+                return f"Error submitting workflow: {str(e)}"
+        
+        self._run_in_thread(do_run)
+    
+    def check_output(self) -> None:
+        def do_check() -> str:
+            if not self.last_prompt_id:
+                return "No prompt ID stored. Run a workflow first."
+            
+            try:
+                url = f"{COMFYUI_URL}/history/{self.last_prompt_id}"
+                with urllib.request.urlopen(url, timeout=10) as response:
+                    history = json.loads(response.read().decode("utf-8"))
+                
+                if not history or self.last_prompt_id not in history:
+                    return f"Prompt {self.last_prompt_id} not in history yet. Still processing or not started."
+                
+                output = history[self.last_prompt_id]
+                lines = [f"Prompt ID: {self.last_prompt_id}"]
+                
+                if "outputs" in output:
+                    lines.append("\nOutputs:")
+                    for node_id, node_output in output["outputs"].items():
+                        lines.append(f"\n  Node {node_id}:")
+                        for key, value in node_output.items():
+                            if isinstance(value, list):
+                                for item in value:
+                                    if isinstance(item, str) and (item.endswith(".mp4") or item.endswith(".png")):
+                                        download_url = f"{COMFYUI_URL}/view?filename={item}"
+                                        lines.append(f"    {key}: {item}")
+                                        lines.append(f"    Download: {download_url}")
+                            else:
+                                lines.append(f"    {key}: {value}")
+                else:
+                    lines.append("No outputs yet.")
+                
+                return "\n".join(lines)
+            except Exception as e:
+                return f"Error checking output: {str(e)}"
+        
+        self._run_in_thread(do_check)
 
     def open_modal(self) -> None:
         webbrowser.open(DEPLOYMENT_URL)

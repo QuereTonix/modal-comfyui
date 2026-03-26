@@ -31,12 +31,12 @@ def hf_download(
     local_filename = Path(filename).name
     target_path = Path(model_dir) / local_filename
     
-    # Remove existing file/link if it exists to ensure fresh link
+    # Remove existing file/link if it exists to ensure fresh copy
     if target_path.exists() or target_path.is_symlink():
         target_path.unlink()
     
     _ = subprocess.run(
-        f"ln -s {model} {model_dir}/{local_filename}",
+        f"cp -v {model} {model_dir}/{local_filename}",
         shell=True,
         check=True,
     )
@@ -49,7 +49,7 @@ def hf_download(
         if alias_path.exists() or alias_path.is_symlink():
             alias_path.unlink()
         _ = subprocess.run(
-            f"ln -s {model} {model_dir}/{alias_name}",
+            f"cp -v {model} {model_dir}/{alias_name}",
             shell=True,
             check=True,
         )
